@@ -7,6 +7,7 @@ Benchmark inference từ checkpoint pretrained cho DMFC-FAS, MobileNetV3 và Min
 | Nguồn | Vai trò | Dữ liệu | Lệnh setup |
 |---|---|---|---|
 | Minivision demo | Kiểm tra cài đặt và inference | 3 ảnh từ repo tác giả | `python setup_data.py smoke` tự tải ảnh |
+| UniAttackData+ physical | Kiểm tra đủ 6 nhóm theo challenge | Print, Replay, Cutouts, Transparent, Plaster, Resin | `python setup_data.py uniattack-plus --root /path/to/UniAttackDataPlus` sau khi nhận dữ liệu và nhãn test |
 | WMCA RGB Grandtest | Benchmark chính cho mặt nạ 3D | RGB, bona fide, ảnh in, replay, mặt nạ cứng/mềm, mặt nạ giấy, đầu mannequin và kính ngụy trang | `python setup_data.py wmca --root /path/to/preprocessed-face-station_RGB` sau khi tải bản RGB |
 | Replay-Attack Grandtest | Benchmark bổ sung cho ảnh in và màn hình | Video webcam, bona fide, ảnh in, replay điện thoại/tablet | `python setup_data.py replay-attack --root /path/to/replayattack` sau khi tải video |
 | Dữ liệu riêng, ví dụ ZED Mini | Kiểm tra khả năng chuyển sang camera robot | Ảnh hoặc video có nhãn và ID nhóm | `prepare_eval.py` với inventory của bạn |
@@ -33,6 +34,28 @@ python benchmark.py run --manifest data/smoke/manifest.csv \
 `fetch` tải trọng số và code kiến trúc MiniFASNet đã ghim phiên bản, có xác minh SHA-256. Smoke có một ảnh live để tạo reference DMFC và hai ảnh spoof để kiểm tra luồng chấm điểm. Các chỉ số cần ngưỡng sẽ để trống vì smoke thiếu calibration. Trên Jetson, dùng bản PyTorch và torchvision tương thích JetPack. Mặc định inference chạy CPU. Thêm `--device cuda` sau `run` để chạy các model PyTorch trên GPU, còn MN3 và YuNet chạy CPU.
 
 ## 3. Chuẩn bị benchmark và chạy inference
+
+### UniAttackData+ cho đủ sáu nhóm physical
+
+[Xin bộ dữ liệu và nhãn subtype từ ban tổ chức](https://sites.google.com/view/face-anti-spoofing-challenge/dataset-download/uniattackdata-iccv2025). Dùng thư mục có `Data-train`, `Data-val`, `Data-test` và ba file `Protocol-{train,val,test}.txt`. Mỗi dòng cần đường dẫn tương đối và mã nhãn. Nếu file test của challenge chỉ có đường dẫn, cung cấp file test có nhãn do tác giả cấp bằng `--test-protocol /path/to/labeled-test.txt`. Xem [quy ước chuẩn bị dữ liệu của DMFC-FAS](https://github.com/wangjl1993/DMFC-FAS/tree/master/prepare_data).
+
+```bash
+python setup_data.py uniattack-plus --root /path/to/UniAttackDataPlus --metadata-only
+python setup_data.py uniattack-plus --root /path/to/UniAttackDataPlus
+```
+
+Script giữ split nguồn, lấy bona fide từ Train làm reference, dùng Val cho calibration và bỏ các mẫu digital. Test phải có bona fide và đủ sáu nhãn spoof. Có thể tăng `--min-test-per-category` để yêu cầu nhiều mẫu hơn mỗi nhóm. Đếm theo dòng protocol. Nếu bản phát hành gồm ảnh rời mà thiếu ID video/người, số dòng không thể dùng làm số video/người độc lập.
+
+| Mã UniAttackData+ | Nhãn xuất |
+|---|---|
+| `1_0_0` | `print` |
+| `1_0_1` | `replay` |
+| `1_0_2` | `cutout` |
+| `1_1_0` | `3d_mask_transparent` |
+| `1_1_1` | `3d_mask_plaster` |
+| `1_1_2` | `3d_mask_resin` |
+
+Sau khi setup, dùng `data/uniattack-plus/manifest.csv` với `benchmark.py run`. Chọn `--input-mode raw` và YuNet nếu đầu vào là ảnh nguyên khung, hoặc `--input-mode cropped` nếu đã crop mặt. Với DMFC-FAS, báo đây là đánh giá trong dataset đã dùng để huấn luyện. CASIA-SURF, CeFA và HiFiMask có đóng góp mẫu vào UniAttackData+, nên cần kiểm tra trùng mẫu nếu muốn dùng chúng làm test ngoài tập cho checkpoint này. Xem [báo cáo challenge](https://openaccess.thecvf.com/content/ICCV2025W/FAS2025/html/Ma_UniAttackData_Unified_Physical-Digital_Attack_Detection_Challenge_ICCVW_2025_paper.html).
 
 ### WMCA RGB cho 3D mask
 
