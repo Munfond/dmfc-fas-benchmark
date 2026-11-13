@@ -6,7 +6,7 @@
 |---|---|---|
 | Minivision demo | Smoke test thật/giả, kiểm tra loader và các model chạy được | `python prepare_smoke.py` tải 3 ảnh ví dụ từ repo tác giả. |
 | WMCA RGB | Test public trên mặt thật, ảnh in, replay và mặt nạ | Lấy bản RGB và metadata theo điều kiện truy cập của [Idiap](https://www.idiap.ch/en/dataset/wide-multi-channel-presentation-attack-wmca). |
-| SiW-Mv2 | Nguồn bổ sung cho tấn công vật lý đa dạng | Dùng dữ liệu và protocol từ [MSU](https://cvlab.cse.msu.edu/siwm-v2-dataset.html). |
+| Replay-Attack | Benchmark phụ cho ảnh in và replay | Xin quyền tại [Zenodo](https://zenodo.org/records/4593128) rồi dùng `setup_data.py replay-attack`. |
 | ZED Mini mới thu | Blind test cho robot | Chốt checkpoint và quy trình chấm trước khi thu hoặc mở tập test. Giữ riêng người, phiên và mẫu mặt nạ. |
 
 Ảnh demo có thể trùng nguồn train. Dùng chúng để kiểm tra kỹ thuật chạy và để trống calibration. Dùng dataset có giấy phép phù hợp cho benchmark thật. Ảnh, video và checkpoint không được đóng gói trong repo.
@@ -36,6 +36,29 @@ Nếu HDF5 lưu RGB dưới một dataset 4 chiều thay cho các nhóm `Frame_N
 Metadata khớp số lượng Grandtest của Idiap sau khi loại wig/makeup. Eval có 115 bona fide và 442 spoof, gồm 137 mặt nạ mềm và 49 mặt nạ cứng. Đọc hai hàng `3d_mask_flexible` và `3d_mask_rigid` trong `video_metrics.csv`. Script kiểm tra `client_id` và PAI tách giữa các split theo Grandtest. Người thực hiện trình diện có thể lặp giữa các split theo metadata gốc. Nếu dùng WMCA làm test cross-dataset, cần reference và calibration từ nguồn khác, và cần kiểm tra lịch sử từng checkpoint. Cấu hình trên dùng train/dev của WMCA để tạo reference và chọn ngưỡng.
 
 Đã kiểm tra metadata chính thức và đường xuất manifest trên HDF5 giả lập. Cần quyền Zenodo để xác nhận layout HDF5 của bản RGB thực tế và chạy benchmark trên ảnh thật.
+
+## Replay-Attack Grandtest
+
+Tải archive chính thức sau khi Idiap duyệt quyền. Trỏ `--root` vào thư mục có dạng sau. Các thư mục enrollment dành cho nhận diện nằm ngoài quy trình PAD này.
+
+```text
+replayattack/
+  train/
+    real/
+    attack/
+  devel/
+    real/
+    attack/
+  test/
+    real/
+    attack/
+```
+
+```bash
+python setup_data.py replay-attack --root /path/to/replayattack --frames-per-clip 8
+```
+
+Script quét video trong các thư mục trên, kể cả các thư mục con như `fixed` và `hand`. Nó lấy ID client từ tên file chính thức, gộp `mobile` và `highdef` thành `replay`, kiểm tra client tách split và đối chiếu số clip (60/300 Train, 60/300 Devel, 80/400 Test theo live/spoof). Kết quả nằm ở `data/replay-attack/manifest.csv` và `manifest.summary.json`. Dùng YuNet ở chế độ raw để chấm video nguyên khung. Đã kiểm tra importer với cấu trúc và video giả lập. Cần archive được cấp quyền để xác nhận trên video thật.
 
 ## Nhập dữ liệu từ các nguồn khác
 
