@@ -1,4 +1,4 @@
-"""Run DMFC-FAS, anti-spoof-mn3 and MiniFASNetV2 on a shared image manifest."""
+"""Benchmark RGB face anti-spoofing checkpoints on a shared image manifest."""
 
 import argparse
 import csv
@@ -45,6 +45,9 @@ MODEL_ASSETS = {
     "mn3": ("mn3.onnx",),
     "mini": ("mini.pth", "minifasnet_upstream.py"),
 }
+RESEARCH_MODELS = ("gac", "mvp", "flip-mcl")
+MODEL_NAMES = (*MODEL_ASSETS, *RESEARCH_MODELS)
+CLIP_SHA256 = "5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f"
 FIELDS = ("image_path", "source_dataset", "split", "label", "attack_type",
           "subject_id", "session_id", "video_id", "mask_id")
 PREDICTION_FIELDS = FIELDS + ("model", "status", "spoof_score", "threshold", "prediction",
@@ -69,28 +72,32 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def prepare_assets(directory, models, download):
+def ensure_asset(directory, name, url, expected, download):
     directory.mkdir(parents=True, exist_ok=True)
-    for name in dict.fromkeys(asset for model in models for asset in MODEL_ASSETS[model]):
-        path = directory / name
-        url, expected = ASSETS[name]
-        if path.is_file() and sha256(path) == expected:
-            continue
-        if not download:
-            raise ValueError(f"Missing or unexpected asset {path}. Run the fetch command.")
-        print(f"Downloading {name}", flush=True)
-        with NamedTemporaryFile(dir=directory, delete=False) as temporary:
-            temporary_path = Path(temporary.name)
-            try:
-                with urlopen(url, timeout=60) as response:
-                    while block := response.read(1024 * 1024):
-                        temporary.write(block)
-                temporary.close()
-                if sha256(temporary_path) != expected:
-                    raise ValueError(f"Checksum mismatch for {name}")
-                temporary_path.replace(path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
+    path = directory / name
+    if path.is_file() and sha256(path) == expected:
+        return path
+    if not download:
+        raise ValueError(f"Missing or unexpected asset {path}. Run the fetch command.")
+    print(f"Downloading {name}", flush=True)
+    with NamedTemporaryFile(dir=directory, delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+        try:
+            with urlopen(url, timeout=60) as response:
+                while block := response.read(1024 * 1024):
+                    temporary.write(block)
+            temporary.close()
+            if sha256(temporary_path) != expected:
+                raise ValueError(f"Checksum mismatch for {name}")
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    return path
+
+
+def prepare_assets(directory, models, download):
+    for name in dict.fromkeys(asset for model in models for asset in MODEL_ASSETS.get(model, ())):
+        ensure_asset(directory, name, *ASSETS[name], download=download)
 
 
 def read_manifest(path):
@@ -303,7 +310,7 @@ def score_rows(rows, models, crops):
             score, model_ms = None, None
             if status == "ok":
                 start = perf_counter()
-                score = model.score(faces[name])
+                score = model.score(faces.get(name, faces["mn3"]))
                 model_ms = (perf_counter() - start) * 1000
                 if not math.isfinite(score) or not -1e-6 <= score <= 1 + 1e-6:
                     raise ValueError(f"Invalid spoof score from {name} for {path}")
@@ -312,10 +319,11 @@ def score_rows(rows, models, crops):
                    "preprocess_ms": preprocess_ms, "model_ms": model_ms}
 
 
-def evaluate(predictions, thresholds):
+def evaluate(predictions, thresholds, *, calibration=False):
     groups = defaultdict(list)
+    split = "calibration" if calibration else "test"
     for row in predictions:
-        if row["split"] != "test" or not row["label"]:
+        if row["split"] != split or not row["label"]:
             continue
         if row["label"] == "live":
             for scope in (None, row["source_dataset"]):
@@ -335,6 +343,45 @@ def evaluate(predictions, thresholds):
                    coverage=len(scored) / len(rows), threshold=threshold)
 
 
+def aggregate_videos(predictions, thresholds):
+    """A clip receives the median spoof score of its scorable sampled frames."""
+    groups = defaultdict(list)
+    for row in predictions:
+        identifier = row["video_id"] or row["image_path"]
+        groups[row["model"], row["split"], row["source_dataset"],
+               bool(row["video_id"]), identifier].append(row)
+    for rows in groups.values():
+        first = rows[0]
+        if any((row["label"], row["attack_type"]) != (first["label"], first["attack_type"])
+               for row in rows):
+            raise ValueError(f"Inconsistent labels within video {first['video_id']}")
+        scores = [row["spoof_score"] for row in rows if row["spoof_score"] is not None]
+        score = float(np.median(scores)) if scores else None
+        threshold = thresholds.get(first["model"])
+        prediction = classify(score, threshold)
+        yield {**first, "image_path": "" if first["video_id"] else first["image_path"],
+               "status": "ok" if scores else "unscored", "spoof_score": score,
+               "prediction": prediction, "threshold": threshold,
+               "preprocess_ms": None, "model_ms": None,
+               "frames_scored": len(scores), "frames_total": len(rows)}
+
+
+def classify(score, threshold):
+    if score is None or threshold is None:
+        return ""
+    return "spoof" if score >= threshold else "live"
+
+
+def fit_thresholds(predictions, models, target):
+    scores = defaultdict(list)
+    for row in predictions:
+        if (row["split"] == "calibration" and row["label"] == "live"
+                and row["spoof_score"] is not None):
+            scores[row["model"]].append(row["spoof_score"])
+    return ({name: calibrate(scores[name], target) for name in models},
+            {name: len(scores[name]) for name in models})
+
+
 def write_csv(path, rows, columns):
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -345,6 +392,23 @@ def write_csv(path, rows, columns):
 def run(args):
     rows = read_manifest(args.manifest)
     prepare_assets(args.weights_dir, args.models, download=False)
+    extra = set(args.models).intersection(RESEARCH_MODELS)
+    paths = {}
+    if extra:
+        from research_models import flip_mcl_model, gac_model, mvp_model
+
+        for name in sorted(extra):
+            path = getattr(args, name.replace("-", "_") + "_checkpoint")
+            if path is None or not path.is_file():
+                raise ValueError(f"Provide --{name}-checkpoint with an official FAS checkpoint")
+            paths[name] = path
+        if "mvp" in extra and (args.mvp_repo is None or args.clip_weights is None
+                              or not args.clip_weights.is_file()):
+            raise ValueError("MVP-FAS requires --mvp-repo and --clip-weights")
+        if "mvp" in extra and sha256(args.clip_weights) != CLIP_SHA256:
+            raise ValueError("Expected the original OpenAI CLIP ViT-B/16 weights")
+        if "flip-mcl" in extra and args.flip_repo is None:
+            raise ValueError("FLIP-MCL requires --flip-repo")
     if args.input_mode == "raw" and not args.detector_weights:
         raise ValueError("Raw mode requires --detector-weights with a YuNet ONNX file")
     if args.input_mode == "cropped" and args.detector_weights:
@@ -352,7 +416,7 @@ def run(args):
     if "dmfc" in args.models and not any(row["split"] == "reference" for row, _ in rows):
         raise ValueError("DMFC-FAS needs a separate set of reference live images")
 
-    if {"dmfc", "mini"}.intersection(args.models):
+    if any(name != "mn3" for name in args.models):
         import torch
 
         torch.set_num_threads(args.threads)
@@ -363,6 +427,12 @@ def run(args):
         "mn3": lambda: MN3(args.weights_dir, args.threads),
         "mini": lambda: Mini(args.weights_dir, args.device),
     }
+    if extra:
+        constructors.update({
+            "gac": lambda: gac_model(paths["gac"], args.device),
+            "mvp": lambda: mvp_model(args.mvp_repo, paths["mvp"], args.clip_weights, args.device),
+            "flip-mcl": lambda: flip_mcl_model(args.flip_repo, paths["flip-mcl"], args.device),
+        })
     crops = FaceCrops(args.detector_weights)
     models = {name: constructors[name]() for name in args.models}
     reference_images = []
@@ -383,22 +453,28 @@ def run(args):
         models["dmfc"].reference = np.mean(features, axis=0)
 
     predictions = list(score_rows(rows, models, crops))
-    thresholds, counts = {}, {}
-    for name in models:
-        live = [row["spoof_score"] for row in predictions if row["model"] == name
-                and row["split"] == "calibration" and row["label"] == "live"
-                and row["spoof_score"] is not None]
-        thresholds[name] = calibrate(live, args.bpcer)
-        counts[name] = len(live)
+    thresholds, counts = fit_thresholds(predictions, models, args.bpcer)
     for row in predictions:
         threshold, score = thresholds[row["model"]], row["spoof_score"]
         row["threshold"] = threshold
-        row["prediction"] = (("spoof" if score >= threshold else "live")
-                             if score is not None and threshold is not None else "")
+        row["prediction"] = classify(score, threshold)
+    initial_clips = list(aggregate_videos(predictions, {}))
+    clip_thresholds, clip_counts = fit_thresholds(initial_clips, models, args.bpcer)
+    for row in initial_clips:
+        threshold = clip_thresholds[row["model"]]
+        row["threshold"] = threshold
+        row["prediction"] = classify(row["spoof_score"], threshold)
+    clip_predictions = initial_clips
 
     args.output.mkdir(parents=True, exist_ok=True)
     write_csv(args.output / "predictions.csv", predictions, PREDICTION_FIELDS)
     write_csv(args.output / "metrics.csv", evaluate(predictions, thresholds), METRIC_FIELDS)
+    write_csv(args.output / "video_predictions.csv", clip_predictions,
+              PREDICTION_FIELDS + ("frames_scored", "frames_total"))
+    write_csv(args.output / "video_metrics.csv", evaluate(clip_predictions, clip_thresholds),
+              METRIC_FIELDS)
+    write_csv(args.output / "calibration_metrics.csv",
+              evaluate(predictions, thresholds, calibration=True), METRIC_FIELDS)
     if "dmfc" in models:
         np.save(args.output / "dmfc_reference.npy", models["dmfc"].reference)
     metadata = {
@@ -408,12 +484,18 @@ def run(args):
         "input_mode": args.input_mode,
         "detector_sha256": sha256(args.detector_weights) if args.detector_weights else None,
         "device": {name: "cpu" if name == "mn3" else args.device for name in models},
-        "assets_sha256": {asset: ASSETS[asset][1] for name in models for asset in MODEL_ASSETS[name]},
+        "assets_sha256": {asset: ASSETS[asset][1] for name in models
+                          for asset in MODEL_ASSETS.get(name, ())},
+        "research_checkpoints": {name: {"filename": path.name, "sha256": sha256(path)}
+                                 for name, path in paths.items()},
         "reference_images": reference_images,
         "skipped_reference": skipped_reference,
         "target_bpcer": args.bpcer,
         "thresholds": thresholds,
         "calibration_live_count": counts,
+        "video_thresholds": clip_thresholds,
+        "video_calibration_live_count": clip_counts,
+        "video_aggregation": "median of scorable frames; image used when video_id is empty",
     }
     (args.output / "run.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {len(predictions)} prediction rows to {args.output}")
@@ -424,7 +506,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--weights-dir", type=Path, default=Path("weights"))
-    parser.add_argument("--models", action="append", choices=MODEL_ASSETS,
+    parser.add_argument("--models", action="append", choices=MODEL_NAMES,
                         help="Select a model; repeat this option to select several")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("fetch", help="Download and verify official model assets")
@@ -438,12 +520,20 @@ def main():
     runner.add_argument("--tta", action=argparse.BooleanOptionalAction, default=True,
                         help="Average original and flipped DMFC embeddings")
     runner.add_argument("--bpcer", type=float, default=0.05)
+    runner.add_argument("--gac-checkpoint", type=Path)
+    runner.add_argument("--mvp-checkpoint", type=Path)
+    runner.add_argument("--mvp-repo", type=Path)
+    runner.add_argument("--clip-weights", type=Path)
+    runner.add_argument("--flip-mcl-checkpoint", type=Path)
+    runner.add_argument("--flip-repo", type=Path)
     args = parser.parse_args()
     args.models = list(dict.fromkeys(args.models or MODEL_ASSETS))
     if args.command == "run" and (args.threads < 1 or not 0 <= args.bpcer < 1):
         parser.error("--threads must be positive and --bpcer must be in [0, 1)")
     try:
         if args.command == "fetch":
+            if not set(args.models).intersection(MODEL_ASSETS):
+                raise ValueError("See README for research checkpoint downloads")
             prepare_assets(args.weights_dir, args.models, download=True)
         else:
             run(args)

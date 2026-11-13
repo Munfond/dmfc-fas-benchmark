@@ -82,3 +82,47 @@ Raw mode dùng chung detector cho cả ba model, căn landmark cho DMFC-FAS, cro
 - [DMFC-FAS chính thức](https://github.com/wangjl1993/DMFC-FAS/tree/ce33f053c9b9c9ca2d9daac9f9e35086a7a1198e)
 - [Đặc tả anti-spoof-mn3](https://docs.openvino.ai/2023.3/omz_models_model_anti_spoof_mn3.html)
 - [Minivision Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/tree/b6d5f04ad78778917853b25c778acef6d5626d15)
+
+## Chuẩn bị dữ liệu và chấm theo clip
+
+Dùng `python prepare_wmca.py --metadata-only` để tải và kiểm tra metadata Grandtest chính thức. Sau khi Idiap cấp quyền tải WMCA RGB, chạy `prepare_wmca.py --rgb-root /path/to/preprocessed-face-station_RGB` để tự tạo manifest. Xem [hướng dẫn dữ liệu đánh giá](evaluation/README.md) để chạy WMCA hoặc nhập dữ liệu từ nguồn khác. `prepare_eval.py` nhận ảnh hoặc video, chia theo nhóm, lấy frame và tạo báo cáo số mẫu. Có thể dùng `--holdout-source WMCA` để giữ nguyên nguồn đó làm test. Ba ảnh demo chính thức của Minivision có thể tải qua `python prepare_smoke.py` để kiểm tra CLI chạy được.
+
+Ngoài kết quả theo ảnh, CLI xuất `video_predictions.csv`, `video_metrics.csv` và `calibration_metrics.csv`. Điểm video là median của các frame chấm được. Ngưỡng ảnh và ngưỡng video được chọn riêng từ calibration live theo mục tiêu BPCER. Khi thiếu `video_id`, mỗi ảnh là một lần trình diện riêng trong báo cáo video.
+
+## Model nghiên cứu tùy chọn
+
+Ba baseline cũ vẫn là mặc định. Dùng các tham số `--models` lặp lại để chọn thêm model. Các adapter dùng crop bbox chung của YuNet ở raw mode, hoặc dùng crop bạn cung cấp. Vì vậy kết quả trên tập của bạn có thể khác số công bố dùng preprocessing của tác giả.
+
+| CLI | Model | Trọng số và mã nguồn |
+|---|---|---|
+| `gac` | GAC-FAS, CVPR 2024, ResNet18 RGB | Lấy checkpoint theo protocol từ mục pretrained weights trong [repo tác giả](https://github.com/leminhbinh0209/CVPR24-FAS#31-running). |
+| `mvp` | MVP-FAS, ICCV 2025, CLIP ViT-B/16 + slot attention | Lấy `MVP_FAS_P2_W.pth` từ [Protocol 2](https://drive.google.com/drive/folders/15Sa3P-AaHGmedEtyEs9Tv-aVQsxnQ2dK) cho cấu hình tác giả train SURF/CeFA và test WMCA. [Code tác giả](https://github.com/Elune001/MVP-FAS). |
+| `flip-mcl` | FLIP-MCL, ICCV 2023, CLIP image–text | Chọn checkpoint đã xác minh là bản MCL từ [Model Zoo](https://github.com/koushiksrivats/FLIP/blob/main/docs/model_zoo.md) hoặc từ lần train chính thức. Adapter kiểm tra có state của nhánh `image_mlp` để tránh nạp nhầm FLIP-V/IT. |
+
+`fetch` tự tải ba baseline mặc định. Với các checkpoint nghiên cứu, dùng link tác giả ở bảng trên và lưu file local. Nên chạy model CLIP offline trên máy benchmark có đủ bộ nhớ, hoặc chạy từng model với cùng manifest vào thư mục kết quả riêng. PyTorch 2.6+ được khuyến nghị cho các adapter nghiên cứu vì chúng dùng trình nạp `weights_only`.
+
+```bash
+python -m pip install -r requirements-research.txt
+git clone https://github.com/Elune001/MVP-FAS.git vendor/mvp
+git -C vendor/mvp checkout fad83b94a326cec1925b73b43fb27708f1bdcf23
+mkdir -p weights
+curl -fL https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt \
+  -o weights/ViT-B-16.pt
+
+python benchmark.py --models dmfc --models mn3 --models mini --models mvp run \
+  --mvp-checkpoint weights/MVP_FAS_P2_W.pth \
+  --mvp-repo vendor/mvp --clip-weights weights/ViT-B-16.pt \
+  --manifest /path/to/manifest.csv --input-mode cropped --output runs/with_mvp
+
+python benchmark.py --models gac run --gac-checkpoint weights/gac.pth \
+  --manifest /path/to/manifest.csv --input-mode cropped --output runs/gac
+
+git clone https://github.com/koushiksrivats/FLIP.git vendor/flip
+git -C vendor/flip checkout 4f95def259e135a0cbaff1d770f559ca739c4c9f
+
+python benchmark.py --models flip-mcl run --flip-repo vendor/flip \
+  --flip-mcl-checkpoint weights/flip-mcl.pth \
+  --manifest /path/to/manifest.csv --input-mode cropped --output runs/flip
+```
+
+Giữ checkout upstream sạch. CLI lưu checksum của các checkpoint nghiên cứu vào `run.json`. Đọc [sổ theo dõi nguồn train](evaluation/checkpoints.example.csv) trước khi diễn giải kết quả cross-dataset.
