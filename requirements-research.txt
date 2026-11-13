@@ -1,0 +1,6 @@
+easydict
+ftfy
+regex
+tqdm
+matplotlib
+setuptools<81

@@ -1,0 +1,6 @@
+path,source_dataset,label,attack_type,subject_id,session_id,video_id,mask_id,group_id,split
+/path/to/zed/reference_01.mp4,ZED-Mini,live,,P001,REF01,REF01,,,reference
+/path/to/zed/calibration_01.mp4,ZED-Mini,live,,P002,CAL01,CAL01,,,calibration
+/path/to/wmca/live_01.mp4,WMCA,live,,P001,S01,W001,,,test
+/path/to/wmca/rigid_mask_01.mp4,WMCA,spoof,3d_mask,P003,S02,W002,WMCA-mask-01,,test
+/path/to/wmca/replay_01.mp4,WMCA,spoof,replay,P004,S03,W003,,,test
