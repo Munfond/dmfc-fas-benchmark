@@ -1,95 +1,107 @@
-# Benchmark DMFC-FAS trên tập ảnh gộp
+# Benchmark face anti-spoofing RGB
 
-CLI chạy ba model RGB trên cùng manifest và xuất `spoof_score` theo chiều **điểm càng cao, ảnh càng giống spoof**. Các model dùng checkpoint đã huấn luyện. DMFC-FAS cần ảnh mặt thật tham chiếu để tính điểm cosine.
+Benchmark inference từ checkpoint pretrained cho DMFC-FAS, MobileNetV3 và MiniFASNetV2. Có adapter cho GAC-FAS, MVP-FAS và FLIP-MCL. Mọi model dùng cùng manifest, với score càng cao càng nghiêng về spoof. Kết quả có cả theo ảnh và theo clip, phục vụ so sánh ảnh in, replay và mặt nạ 3D.
 
-| Tên CLI | Model | Cách lấy điểm |
-|---|---|---|
-| `dmfc` | DMFC-FAS ResNet34 epoch 150, seed 42 | `1 - clip(cosine, 0, 1)` theo code tác giả. Ảnh gốc và ảnh lật ngang được gộp ở mức embedding khi bật TTA. |
-| `mn3` | MobileNetV3 anti-spoof-mn3 của Open Model Zoo, train trên CelebA-Spoof | Xác suất class spoof từ ONNX, input 128 × 128 RGB. |
-| `mini` | MiniFASNetV2 80 × 80, checkpoint scale 2.7 của Minivision | Tổng xác suất hai lớp spoof, tương đương `1 - P(live)`. Checkpoint V2 nhận BGR dạng float trong khoảng 0–255 theo code Minivision. |
+## 1. Chọn dữ liệu
 
-## 1. Cài môi trường và tải model
+| Nguồn | Vai trò | Dữ liệu | Lệnh setup |
+|---|---|---|---|
+| Minivision demo | Kiểm tra cài đặt và inference | 3 ảnh từ repo tác giả | `python setup_data.py smoke` tự tải ảnh |
+| WMCA RGB Grandtest | Benchmark chính cho mặt nạ 3D | RGB, bona fide, ảnh in, replay, mặt nạ cứng/mềm, mặt nạ giấy, đầu mannequin và kính ngụy trang | `python setup_data.py wmca --root /path/to/preprocessed-face-station_RGB` sau khi tải bản RGB |
+| Replay-Attack Grandtest | Benchmark bổ sung cho ảnh in và màn hình | Video webcam, bona fide, ảnh in, replay điện thoại/tablet | `python setup_data.py replay-attack --root /path/to/replayattack` sau khi tải video |
+| Dữ liệu riêng, ví dụ ZED Mini | Kiểm tra khả năng chuyển sang camera robot | Ảnh hoặc video có nhãn và ID nhóm | `prepare_eval.py` với inventory của bạn |
 
-Python 3.10 trở lên. Trên Linux x86-64, có thể bắt đầu với bản PyTorch CPU.
+**WMCA và Replay-Attack là bộ dữ liệu nghiên cứu có metadata công khai và file giới hạn truy cập.** Xin quyền qua [WMCA](https://zenodo.org/records/4580313) và [Replay-Attack](https://zenodo.org/records/4593128). Sau khi được duyệt, tải archive chính thức và giải nén vào máy chạy benchmark. Code và tài liệu nằm trong repo, còn ảnh/video giữ trong máy bạn. Xem [quy ước thư mục, split và kiểm tra lỗi](evaluation/README.md).
+
+## 2. Cài môi trường và chạy thử
+
+Cần Python 3.10+. Ví dụ dùng CPU trên Linux x86-64.
 
 ```bash
+git clone https://github.com/Munfond/dmfc-fas-benchmark.git
+cd dmfc-fas-benchmark
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements.txt
 python benchmark.py fetch
+python setup_data.py smoke
+python benchmark.py run --manifest data/smoke/manifest.csv \
+  --input-mode cropped --output runs/smoke
 ```
 
-Trên Jetson, dùng cặp PyTorch/torchvision phù hợp với JetPack và môi trường của máy. Lệnh cài PyTorch phía trên dành cho Linux x86-64. CLI mặc định chạy CPU. `--device cuda` áp dụng cho DMFC-FAS và MiniFASNetV2, còn MN3 dùng ONNX Runtime CPU. Lệnh `fetch` tải trọng số và mã kiến trúc Minivision đã ghim phiên bản, rồi xác minh SHA-256. Chỉ bước này cần mạng nếu đã có các file đầu vào và dependencies ở máy.
+`fetch` tải trọng số và code kiến trúc MiniFASNet đã ghim phiên bản, có xác minh SHA-256. Smoke có một ảnh live để tạo reference DMFC và hai ảnh spoof để kiểm tra luồng chấm điểm. Các chỉ số cần ngưỡng sẽ để trống vì smoke thiếu calibration. Trên Jetson, dùng bản PyTorch và torchvision tương thích JetPack. Mặc định inference chạy CPU. Thêm `--device cuda` sau `run` để chạy các model PyTorch trên GPU, còn MN3 và YuNet chạy CPU.
 
-## 2. Chuẩn bị manifest
+## 3. Chuẩn bị benchmark và chạy inference
 
-Điền đường dẫn tương đối từ vị trí CSV hoặc đường dẫn tuyệt đối. Dùng `reference` cho ảnh mặt thật dùng tạo vector DMFC, `calibration` cho ảnh chọn ngưỡng và `test` cho ảnh đánh giá.
-
-```csv
-image_path,source_dataset,split,label,attack_type,video_id
-images/ref1.jpg,source_a,reference,live,,ref_01
-images/cal1.jpg,source_a,calibration,live,,cal_01
-images/test1.jpg,source_a,test,live,,test_01
-images/mask1.jpg,source_b,test,spoof,3d_mask,test_02
-images/replay1.jpg,source_b,test,spoof,replay,test_03
-```
-
-Ảnh test có thể để trống nhãn. Các cột `subject_id`, `session_id`, `mask_id` và `video_id` là tùy chọn. Dùng ID video ổn định và giữ mọi frame từ cùng clip trong cùng split. Nếu dataset nguồn có ID video trùng giữa các thư mục, dùng đường dẫn video tương đối làm ID. Script chặn trùng đường dẫn ảnh và chặn một ID video xuất hiện ở nhiều split trong cùng dataset. Kiểm tra thêm ảnh gần trùng, trùng người hoặc trùng mặt nạ giữa các nguồn trước khi đánh giá.
-
-## 3. Chạy so sánh
-
-Với dữ liệu đã crop mặt, từ thư mục chứa `benchmark.py` chạy:
+### WMCA RGB cho 3D mask
 
 ```bash
-python benchmark.py run \
-  --manifest /path/to/manifest.csv \
-  --input-mode cropped \
-  --output runs/public_mix \
-  --bpcer 0.05
+python setup_data.py wmca --metadata-only
+python -m pip install h5py
+python setup_data.py wmca --root /path/to/preprocessed-face-station_RGB --frames-per-clip 8
+python benchmark.py run --manifest data/wmca/manifest.csv \
+  --input-mode cropped --output runs/wmca
 ```
 
-Ở chế độ này cả ba model lấy ảnh crop đã có làm đầu vào. MiniFASNetV2 nhận toàn bộ crop và không thể khôi phục vùng ngữ cảnh ngoài crop. Nếu ảnh đã bị crop sát mặt, lưu ý điều này khi đọc kết quả của MiniFASNetV2.
+Metadata chính thức được tải tự động và kiểm tra SHA-256. Script giữ split Grandtest, khớp clip theo thư mục ngày và tên HDF5, rồi trích tối đa 8 frame mỗi clip. Train bona fide cung cấp 124 clip reference. Dev có 557 clip và Eval có 557 clip, gồm 115 bona fide và 442 spoof. Eval có 137 clip mặt nạ mềm và 49 clip mặt nạ cứng. Xem [protocol của Idiap](https://www.idiap.ch/en/dataset/wide-multi-channel-presentation-attack-wmca).
 
-Với ảnh nguyên khung, lấy [YuNet ONNX](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) bản `face_detection_yunet_2023mar.onnx`, rồi chạy:
+### Replay-Attack cho print và replay
+
+Giải nén bản chính thức. `--root` trỏ tới thư mục chứa trực tiếp `train/`, `devel/` và `test/`. Tải [YuNet ONNX](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) bản `face_detection_yunet_2023mar.onnx` cho ảnh nguyên khung.
 
 ```bash
-python benchmark.py run \
-  --manifest /path/to/manifest.csv \
-  --input-mode raw \
-  --detector-weights /path/to/face_detection_yunet_2023mar.onnx \
-  --output runs/public_mix_raw
+python setup_data.py replay-attack --root /path/to/replayattack --frames-per-clip 8
+python benchmark.py run --manifest data/replay-attack/manifest.csv \
+  --input-mode raw --detector-weights /path/to/face_detection_yunet_2023mar.onnx \
+  --output runs/replay-attack
 ```
 
-Raw mode dùng chung detector cho cả ba model, căn landmark cho DMFC-FAS, crop bbox cho MN3 và mở rộng bbox theo scale 2.7 cho MiniFASNetV2. Đây là cấu hình benchmark dùng YuNet. Repo DMFC-FAS gốc dùng InsightFace để tạo crop. Với ảnh raw, ảnh không thấy mặt hoặc có nhiều mặt vẫn xuất dòng trạng thái. Có thể chạy riêng một model bằng `python benchmark.py --models dmfc run --manifest ... --input-mode cropped --output ...`. Dùng `--no-tta` sau `run` để tắt lượt ảnh lật của DMFC.
+Script kiểm tra split và số clip Grandtest trước khi trích frame. Train dùng 60 bona fide làm reference. Devel có 360 clip và Test có 480 clip. Lưu ý checkpoint GAC trong [sổ theo dõi](evaluation/checkpoints.example.csv) đã dùng Replay-Attack khi train.
 
-## 4. Đọc kết quả
+### Dữ liệu tự thu hoặc tổng hợp
+
+Sao chép [inventory mẫu](evaluation/inventory.example.csv), điền đường dẫn ảnh/video cùng nguồn, label, loại tấn công và ID người, phiên, clip hoặc mặt nạ. Khai báo split chính thức nếu có.
+
+```bash
+python prepare_eval.py --inventory /path/to/inventory.csv \
+  --manifest data/custom/manifest.csv --frames-per-video 8
+```
+
+Dùng `--holdout-source TEN_DATASET` để dành toàn bộ một nguồn cho test khi reference/calibration đến từ nguồn khác. Nếu ảnh đã crop, chọn `--input-mode cropped`. Nếu là video hay ảnh nguyên khung, dùng cấu hình YuNet như ví dụ Replay-Attack. Raw mode căn landmark cho DMFC, crop bbox cho MN3 và mở rộng bbox 2.7 cho MiniFASNetV2. Crop sẵn quá sát có thể làm mất ngữ cảnh MiniFASNet cần. Tiền xử lý có thể khác code tác giả.
+
+## 4. Split, ngưỡng và cách đọc kết quả
+
+| Split | Cách dùng |
+|---|---|
+| `reference` | Ảnh bona fide tạo vector tham chiếu DMFC |
+| `calibration` | Dùng score bona fide để chọn ngưỡng riêng cho từng model và từng đơn vị ảnh/clip |
+| `test` | Chấm kết quả bằng ngưỡng đã chốt. Cần nhãn để tính APCER/BPCER |
+
+Mục tiêu mặc định là BPCER calibration 5%, chỉnh bằng `--bpcer` sau `run`. Score clip là median của frame chấm được. **APCER** là tỷ lệ mẫu spoof bị nhận nhầm thành live. **BPCER** là tỷ lệ mẫu live bị nhận nhầm thành spoof. Đọc `coverage` cùng các tỷ lệ lỗi vì clip không có frame chấm được nằm ngoài mẫu số tính lỗi.
 
 | File | Nội dung |
 |---|---|
-| `predictions.csv` | Mỗi cặp ảnh và model có score, trạng thái, ngưỡng, dự đoán và thời gian xử lý. Có cả ảnh calibration và test. |
-| `metrics.csv` | Chỉ tính trên test có nhãn, gồm BPCER, APCER gộp và APCER theo loại tấn công. Cột nguồn trống chỉ kết quả gộp qua các nguồn. `rate` và `coverage` là tỷ lệ 0–1. |
-| `run.json` | Checksum asset và manifest, thiết bị, ngưỡng, số mẫu calibration và danh sách ảnh tham chiếu đã dùng. |
-| `dmfc_reference.npy` | Vector tham chiếu đã dùng khi chạy DMFC-FAS. |
+| `video_metrics.csv` | BPCER và APCER theo nguồn và loại tấn công ở cấp clip. Tìm `3d_mask_flexible` và `3d_mask_rigid` khi chạy WMCA. |
+| `video_predictions.csv` | Score, dự đoán và số frame chấm được mỗi clip |
+| `metrics.csv`, `predictions.csv` | Kết quả ở cấp ảnh/frame |
+| `calibration_metrics.csv` | Chỉ số trên tập calibration |
+| `run.json` | Cấu hình, checksum, ngưỡng và reference dùng trong lần chạy |
+| `dmfc_reference.npy` | Vector tham chiếu khi chạy DMFC |
 
-- Ngưỡng riêng cho mỗi model được chọn từ **cùng tập calibration live** để BPCER trên calibration không vượt mục tiêu. Khi chưa có ảnh calibration live chấm được, CLI vẫn xuất score và để trống dự đoán cùng metric phụ thuộc ngưỡng.
-- So **APCER của 3D mask** và BPCER thực tế trên test. `scored` là mẫu số dùng tính tỷ lệ lỗi. `total` gồm cả ảnh không chấm được, vì vậy xem thêm `coverage`. Mỗi hàng là một ảnh. Khi có nhiều frame trên mỗi clip, kết quả theo ảnh có thể chịu ảnh hưởng của số frame.
-- `preprocess_ms` là thời gian chung để đọc ảnh và chuẩn bị crop. `model_ms` gồm resize/chuẩn hóa riêng và chấm điểm. Ảnh đầu có thể bao gồm thời gian khởi động. Đo cùng thiết bị và cấu hình nếu cần so độ trễ.
-- Nếu tập test có CelebA-Spoof, ghi rõ đây là dataset đã dùng để train MN3. Khi đánh giá khả năng chuyển dataset, xem riêng các nguồn độc lập với tập train và giữ reference/calibration ngoài nguồn test theo protocol đã chọn.
+Để so sánh checkpoint, giữ cùng manifest, detector, chế độ crop và số frame. Kiểm tra tập train, nguồn dùng để chọn checkpoint, và trùng người/clip/mặt nạ. CelebA-Spoof đã dùng để train MN3. Nguồn train MiniFASNetV2 chưa xác minh. WMCA từng là target công bố của checkpoint MVP được gợi ý. Một split chuẩn giúp tái lập phép đo, còn trạng thái độc lập phụ thuộc từng checkpoint. Xem [sổ theo dõi checkpoint](evaluation/checkpoints.example.csv).
 
-## Nguồn
+## 5. Baseline mặc định
 
-- [DMFC-FAS chính thức](https://github.com/wangjl1993/DMFC-FAS/tree/ce33f053c9b9c9ca2d9daac9f9e35086a7a1198e)
-- [Đặc tả anti-spoof-mn3](https://docs.openvino.ai/2023.3/omz_models_model_anti_spoof_mn3.html)
-- [Minivision Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/tree/b6d5f04ad78778917853b25c778acef6d5626d15)
+| CLI | Model | Score |
+|---|---|---|
+| `dmfc` | DMFC-FAS ResNet34, epoch 150, seed 42 | Khoảng cách từ embedding đến reference bona fide. Dùng `--no-tta` sau `run` để tắt ảnh lật. |
+| `mn3` | Open Model Zoo anti-spoof-mn3 | Xác suất spoof từ ONNX, ảnh RGB 128 × 128 |
+| `mini` | MiniFASNetV2 scale 2.7 | Tổng xác suất hai lớp spoof, ảnh BGR 80 × 80 |
 
-## Chuẩn bị dữ liệu và chấm theo clip
+Để chạy riêng một model, đặt `--models` trước `run`, ví dụ `python benchmark.py --models mn3 run ...`.
 
-Dùng `python prepare_wmca.py --metadata-only` để tải và kiểm tra metadata Grandtest chính thức. Sau khi Idiap cấp quyền tải WMCA RGB, chạy `prepare_wmca.py --rgb-root /path/to/preprocessed-face-station_RGB` để tự tạo manifest. Xem [hướng dẫn dữ liệu đánh giá](evaluation/README.md) để chạy WMCA hoặc nhập dữ liệu từ nguồn khác. `prepare_eval.py` nhận ảnh hoặc video, chia theo nhóm, lấy frame và tạo báo cáo số mẫu. Có thể dùng `--holdout-source WMCA` để giữ nguyên nguồn đó làm test. Ba ảnh demo chính thức của Minivision có thể tải qua `python prepare_smoke.py` để kiểm tra CLI chạy được.
-
-Ngoài kết quả theo ảnh, CLI xuất `video_predictions.csv`, `video_metrics.csv` và `calibration_metrics.csv`. Điểm video là median của các frame chấm được. Ngưỡng ảnh và ngưỡng video được chọn riêng từ calibration live theo mục tiêu BPCER. Khi thiếu `video_id`, mỗi ảnh là một lần trình diện riêng trong báo cáo video.
-
-## Model nghiên cứu tùy chọn
+## 6. Model nghiên cứu tùy chọn
 
 Ba baseline cũ vẫn là mặc định. Dùng các tham số `--models` lặp lại để chọn thêm model. Các adapter dùng crop bbox chung của YuNet ở raw mode, hoặc dùng crop bạn cung cấp. Vì vậy kết quả trên tập của bạn có thể khác số công bố dùng preprocessing của tác giả.
 
@@ -126,3 +138,9 @@ python benchmark.py --models flip-mcl run --flip-repo vendor/flip \
 ```
 
 Giữ checkout upstream sạch. CLI lưu checksum của các checkpoint nghiên cứu vào `run.json`. Đọc [sổ theo dõi nguồn train](evaluation/checkpoints.example.csv) trước khi diễn giải kết quả cross-dataset.
+
+## Nguồn
+
+- [DMFC-FAS chính thức](https://github.com/wangjl1993/DMFC-FAS/tree/ce33f053c9b9c9ca2d9daac9f9e35086a7a1198e)
+- [Đặc tả anti-spoof-mn3](https://docs.openvino.ai/2023.3/omz_models_model_anti_spoof_mn3.html)
+- [Minivision Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/tree/b6d5f04ad78778917853b25c778acef6d5626d15)
