@@ -1,0 +1,7 @@
+model,checkpoint,training_sources,evaluation_notes
+dmfc,model_epoch_150.pth,UniAttackData+ Protocol 3,Audit overlap with original source datasets and identities
+mn3,anti-spoof-mn3.onnx,CelebA-Spoof,CelebA-Spoof official test is in-domain
+mini,2.7_80x80_MiniFASNetV2.pth,unknown,Public dataset overlap is unverified
+gac,resnet18_pICM2O_best.pth,Replay-Attack;CASIA-MFSD;MSU-MFSD,OULU was the reported target; independent external holdout preferred
+mvp,MVP_FAS_P2_W.pth,CASIA-SURF;CASIA-SURF CeFA,WMCA was the reported target; audit any extra training sources and selection
+flip-mcl,author-verified WMCA zero-shot,CASIA-SURF;CASIA-SURF CeFA,Use only a checkpoint verified as MCL and confirm training provenance
