@@ -85,6 +85,27 @@ Script giữ split nguồn, lấy bona fide từ Train làm reference, dùng Val
 
 Sau khi setup, dùng `data/uniattack-plus/manifest.csv` với `benchmark.py run`. Chọn `--input-mode raw` và YuNet nếu đầu vào là ảnh nguyên khung, hoặc `--input-mode cropped` nếu đã crop mặt. Với DMFC-FAS, báo đây là đánh giá trong dataset đã dùng để huấn luyện. CASIA-SURF, CeFA và HiFiMask có đóng góp mẫu vào UniAttackData+, nên cần kiểm tra trùng mẫu nếu muốn dùng chúng làm test ngoài tập cho checkpoint này. Xem [báo cáo challenge](https://openaccess.thecvf.com/content/ICCV2025W/FAS2025/html/Ma_UniAttackData_Unified_Physical-Digital_Attack_Detection_Challenge_ICCVW_2025_paper.html).
 
+### Tạo tập test cân bằng tối đa 5 GB
+
+Chuẩn bị một manifest ứng viên có bona fide và đủ sáu nhãn trong bảng UniAttackData+ ở trên. Với dữ liệu tự thu hoặc bộ được cấp quyền, dùng [inventory mẫu](evaluation/inventory.example.csv) và `prepare_eval.py` để nhập nhãn đã xác minh. Điền `subject_id` cho mỗi dòng và `mask_id` cho mỗi mẫu mặt nạ 3D. Dùng cùng một `mask_id` cho mọi lần xuất hiện của cùng vật mẫu. Dùng `video_id` nếu nhiều frame đến từ cùng clip và điền `session_id` nếu metadata có phiên quay. Với nguồn đã crop, dùng cùng chế độ đầu vào cho lần benchmark.
+
+Importer `uniattack-plus` đọc nhãn chính thức. Khi file protocol thiếu ID người, clip hoặc vật mẫu, bổ sung từ metadata xác thực trước khi xuất subset. Nếu chỉ có tên file ẩn danh, bạn có thể chạy chấm theo nhóm trên split chính thức, còn bước xuất subset cân bằng cần ID người và vật mẫu để kiểm tra đa dạng.
+
+```bash
+python prepare_physical_subset.py --manifest data/custom/manifest.csv \
+  --output data/physical-test --per-class 100 --min-subjects 20 --min-masks 5 --seed 42
+
+python setup_data.py check-physical --manifest data/physical-test/manifest.csv \
+  --min-test-per-category 100
+```
+
+- Mặc định lấy **100 lượt trình diện mỗi nhóm**, gồm 100 bona fide và 600 spoof, với ít nhất 20 ID người mỗi nhóm và 5 vật mẫu cho từng nhóm mặt nạ 3D. Một ảnh là một lượt khi thiếu `video_id`. Với dữ liệu trích từ video, luôn giữ ID clip để đếm đúng. Các ngưỡng mặc định là cấu hình đề xuất cho lần so sánh đầu, có thể đổi theo dữ liệu hoặc sai số mong muốn.
+- Script giữ nguyên split, ưu tiên các nguồn, ID người và vật mẫu ít được đại diện trong mỗi nhóm, đồng thời kiểm tra ID bị chia qua nhiều split trong từng nguồn và file trùng byte. Nếu biết một người hoặc vật mẫu trùng giữa các nguồn, ghi `group_id` chung ở inventory để `prepare_eval.py` kiểm tra trước. Giữ số frame mỗi clip nhất quán khi chuẩn bị manifest.
+- Giới hạn **5.000.000.000 byte** áp dụng cho thư mục xuất, gồm dữ liệu test, manifest và `distribution.json`. Reference/calibration vẫn được đọc từ đường dẫn gốc. Nếu vượt ngân sách, giảm số frame/clip hoặc giảm `--per-class` theo cùng một mức cho mọi nhóm. Đối chiếu số clip, ảnh, người, phiên và vật mẫu theo nhóm trong báo cáo trước khi chạy.
+- Đây là phân phối **cân bằng để so model**, với tỷ lệ live/spoof 1:6. Báo APCER riêng từng nhóm và BPCER. Tỷ lệ tấn công khi triển khai cần một phép đo riêng. Trùng dữ liệu với checkpoint vẫn cần kiểm tra theo nguồn train và nguồn chọn trọng số.
+
+Chạy `benchmark.py run` với `--manifest data/physical-test/manifest.csv` và chế độ crop tương ứng. Với dữ liệu có nhiều frame mỗi clip, đọc `video_metrics.csv` và coverage. Giữ manifest cố định cho mọi model.
+
 ### WMCA RGB cho 3D mask
 
 ```bash
