@@ -7,6 +7,7 @@ Benchmark inference từ checkpoint pretrained cho DMFC-FAS, MobileNetV3 và Min
 | Nguồn | Vai trò | Dữ liệu | Lệnh setup |
 |---|---|---|---|
 | Minivision demo | Kiểm tra cài đặt và inference | 3 ảnh từ repo tác giả | `python setup_data.py smoke` tự tải ảnh |
+| CelebA-Spoof | Benchmark ảnh tải từ nguồn chính thức | Print, Replay, Paper Cut, 3D mask chưa phân vật liệu | `python celeba_spoof.py download` rồi `extract` và `prepare` |
 | UniAttackData+ physical | Kiểm tra đủ 6 nhóm theo challenge | Print, Replay, Cutouts, Transparent, Plaster, Resin | `python setup_data.py uniattack-plus --root /path/to/UniAttackDataPlus` sau khi nhận dữ liệu và nhãn test |
 | WMCA RGB Grandtest | Benchmark chính cho mặt nạ 3D | RGB, bona fide, ảnh in, replay, mặt nạ cứng/mềm, mặt nạ giấy, đầu mannequin và kính ngụy trang | `python setup_data.py wmca --root /path/to/preprocessed-face-station_RGB` sau khi tải bản RGB |
 | Replay-Attack Grandtest | Benchmark bổ sung cho ảnh in và màn hình | Video webcam, bona fide, ảnh in, replay điện thoại/tablet | `python setup_data.py replay-attack --root /path/to/replayattack` sau khi tải video |
@@ -34,6 +35,33 @@ python benchmark.py run --manifest data/smoke/manifest.csv \
 `fetch` tải trọng số và code kiến trúc MiniFASNet đã ghim phiên bản, có xác minh SHA-256. Smoke có một ảnh live để tạo reference DMFC và hai ảnh spoof để kiểm tra luồng chấm điểm. Các chỉ số cần ngưỡng sẽ để trống vì smoke thiếu calibration. Trên Jetson, dùng bản PyTorch và torchvision tương thích JetPack. Mặc định inference chạy CPU. Thêm `--device cuda` sau `run` để chạy các model PyTorch trên GPU, còn MN3 và YuNet chạy CPU.
 
 ## 3. Chuẩn bị benchmark và chạy inference
+
+### CelebA-Spoof tải trực tiếp
+
+Bản ECCV 2020 có metadata và split train/test chính thức. Tác giả công bố dữ liệu cho nghiên cứu phi thương mại. Link Drive hiện có 74 phần, tổng khoảng 77 GB trước khi giải nén. Chuẩn bị thêm dung lượng cho dữ liệu đã giải nén và cài 7-Zip (`7z` hoặc `7zz` trong PATH). Xem [trang phát hành](https://github.com/ZhangYuanhan-AI/CelebA-Spoof#dataset-downloads) và [điều khoản](https://mmlab.ie.cuhk.edu.hk/projects/CelebA/CelebA_Spoof.html).
+
+```bash
+python -m pip install gdown==6.5.1
+python celeba_spoof.py download
+python celeba_spoof.py extract
+python celeba_spoof.py prepare --root data/celeba-spoof-raw/CelebA_Spoof --metadata-only
+python celeba_spoof.py prepare --root data/celeba-spoof-raw/CelebA_Spoof
+python benchmark.py run --manifest data/celeba-spoof/manifest.csv \
+  --input-mode raw --detector-weights /path/to/face_detection_yunet_2023mar.onnx \
+  --output runs/celeba-spoof
+```
+
+`--root` trỏ đến thư mục chứa `Data/train/`, `Data/test/` và `metas/intra_test/`. Nếu đã tải các phần ZIP từ trang tác giả, dùng `extract --parts /path/to/parts`. Sau khi một lượt tải bị gián đoạn, chạy lại `download` để tiếp tục. Nếu giải nén lỗi giữa chừng, dùng thư mục output trống cho lượt kế tiếp.
+
+Script giữ nguyên test theo JSON chính thức, loại ID người xuất hiện trong test khỏi các ứng viên reference/calibration, và lấy một ảnh bona fide cho mỗi người được chọn từ train. Metadata đã kiểm tra có 3 ID xuất hiện ở cả hai file nhãn chính thức. Script dùng nhãn JSON thay cho tên thư mục để xác định live/spoof. Mặc định có 50 người làm reference và 200 người khác làm calibration, có thể đổi bằng `--reference-subjects` và `--calibration-subjects`. Đọc `metrics.csv` ở cấp ảnh. MN3 đã train trên CelebA-Spoof, nên báo kết quả của checkpoint này là in-dataset. Dùng cùng detector để so sánh các model và báo kèm coverage.
+
+Nhóm Paper Cut được xuất là `cutout` theo taxonomy của CelebA-Spoof. Nhãn 3D Mask được xuất là `3d_mask_unspecified` vì metadata không phân biệt Transparent, Plaster và Resin. Để kiểm tra manifest bất kỳ theo tiêu chí sáu nhóm UniAttackData+, chạy:
+
+```bash
+python setup_data.py check-physical --manifest /path/to/manifest.csv --min-test-per-category 1
+```
+
+Lệnh báo số mẫu và trả mã lỗi nếu thiếu bona fide hoặc nhóm vật lý. Nó đếm mỗi `video_id` một lần trong từng nguồn, và đếm theo ảnh nếu thiếu ID video. Mức 1 chỉ kiểm tra nhóm có mặt. Để đánh giá, chốt số mẫu tối thiểu trước và đối chiếu độ đa dạng theo người, phiên quay và vật mẫu. CelebA-Spoof sẽ báo thiếu ba nhóm vật liệu 3D khi chạy kiểm tra này.
 
 ### UniAttackData+ cho đủ sáu nhóm physical
 

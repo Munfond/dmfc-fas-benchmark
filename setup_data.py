@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
-from benchmark import write_csv
+from benchmark import read_manifest, write_csv
 from prepare_eval import VIDEO_SUFFIXES, prepare
 
 REPLAY_SPLITS = {"train": "reference", "devel": "calibration", "test": "test"}
@@ -109,6 +109,23 @@ def uniattack_inventory(root, test_protocol, minimum):
     return rows
 
 
+def check_physical_coverage(manifest, minimum):
+    units = {}
+    for row, image in read_manifest(manifest):
+        if row["split"] != "test":
+            continue
+        key = (row["source_dataset"], row["video_id"] or str(image))
+        label = row["label"], row["attack_type"]
+        if units.setdefault(key, label) != label:
+            raise ValueError(f"Inconsistent test labels for {key}")
+    counts = Counter(attack if label == "spoof" else label for label, attack in units.values())
+    required = ("live", *UNIATTACK_LABELS.values())
+    print("Test presentations: " + ", ".join(f"{name}={counts[name]}" for name in required))
+    missing = [f"{name} ({counts[name]}/{minimum})" for name in required if counts[name] < minimum]
+    if missing:
+        raise ValueError("Insufficient physical test coverage: " + ", ".join(missing))
+
+
 def main(args):
     output = args.output or Path("data") / args.source
     if args.source == "smoke":
@@ -158,7 +175,18 @@ if __name__ == "__main__":
             source.add_argument("--metadata-only", action="store_true")
             source.add_argument("--test-protocol", type=Path)
             source.add_argument("--min-test-per-category", type=int, default=1)
+    coverage = sources.add_parser("check-physical")
+    coverage.add_argument("--manifest", type=Path, required=True)
+    coverage.add_argument("--min-test-per-category", type=int, default=1)
     args = parser.parse_args()
+    if args.source == "check-physical":
+        if args.min_test_per_category < 1:
+            parser.error("--min-test-per-category must be positive")
+        try:
+            check_physical_coverage(args.manifest, args.min_test_per_category)
+        except (ValueError, OSError) as error:
+            parser.exit(1, f"Error: {error}\n")
+        sys.exit(0)
     if args.source == "uniattack-plus" and args.min_test_per_category < 1:
         parser.error("--min-test-per-category must be positive")
     if args.source != "smoke" and args.frames_per_clip < 1:
